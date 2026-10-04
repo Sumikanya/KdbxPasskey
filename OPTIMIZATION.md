@@ -4,7 +4,7 @@
 
 凭据页固定标题、搜索与底部提示；关闭导航外层滚动，只有列表滚动。移除站点的 ListBox 选择层，精简站点和账户详情间距，深浅主题及小窗口验证通过。
 
-精简认证提供程序去除 Avalonia/SkiaSharp 和未使用的 UI 预热、设置监视器，保留自包含运行库、COM、通知及 Windows Hello。MSIX 从 141.7 MiB 到 130.0 MiB，减少 8.27%；解压内容减少约 30.7 MiB。尚未量化实际 RAM 降幅，真实认证需要安装后验证。新增 work/check_desktop.py 纳入构建门禁。
+精简认证提供程序去除 Avalonia/SkiaSharp 和未使用的 UI 预热、设置监视器，保留自包含运行库、COM、通知及 Windows Hello。MSIX 从 141.7 MiB 到 130.0 MiB，减少 8.27%；解压内容减少约 30.7 MiB。尚未量化实际 RAM 降幅。用户于 2026-10-05 反馈安装后通行密钥认证通过；结论限于已测试场景，干净卸载尚未验证。新增 work/check_desktop.py 纳入构建门禁。
 
 已沿用原证书签名并验证；详细记录见 VALIDATION.md。以下为历史记录。
 
