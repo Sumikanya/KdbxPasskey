@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: Copyright (C) 2026 Uwe Koegel
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: CI · Build & Test
+run-name: >-
+  Build · ${{ github.head_ref || github.ref_name }} · ${{ github.event.head_commit.message || github.event.pull_request.title || github.event_name }}
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_release:
+        description: 'Also build Release (unsigned)'
+        type: boolean
+        default: true
+      build_store:
+        description: 'Also build Store MSIX (unsigned, for Partner Center)'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.x'
+
+      # Style and analyzer rules come from .editorconfig via EnforceCodeStyleInBuild.
+      # Only CI treats them as errors, so local builds stay warning-tolerant.
+      # Both configurations: some analyzers only fire outside #if DEBUG.
+      - name: Verify code style
+        shell: pwsh
+        run: |
+          $projects = @(
+            'src/KeePassPasskeyShared/KeePassPasskeyShared.csproj',
+            'src/KeePassPasskeyPlugin/KeePassPasskeyPlugin.csproj',
+            'src/KeePassPasskeyPlugin.Tests/KeePassPasskeyPlugin.Tests.csproj',
+            'src/KeePassPasskeyProvider/KeePassPasskeyProvider.csproj'
+          )
+          foreach ($cfg in @('Debug', 'Release')) {
+            foreach ($p in $projects) {
+              dotnet build $p -c $cfg --nologo -warnaserror
+              if ($LASTEXITCODE -ne 0) { throw "Code style check failed ($cfg): $p" }
+            }
+          }
+
+      - name: Run unit tests
+        shell: pwsh
+        run: dotnet test src/KeePassPasskeyPlugin.Tests/KeePassPasskeyPlugin.Tests.csproj -c Debug --nologo
+
+      - name: Build (Debug, optimized, unsigned)
+        shell: pwsh
+        run: .\scripts\Publish-Package.ps1 -Configuration Debug -SkipSign
+
+      - name: Build (Release, unsigned)
+        if: inputs.build_release
+        shell: pwsh
+        run: .\scripts\Publish-Package.ps1 -Configuration Release -SkipSign
+
+      - name: Build (Store MSIX, unsigned)
+        if: inputs.build_store
+        shell: pwsh
+        run: .\scripts\Publish-Package.ps1 -Store
+
+      - name: Upload Defender scan report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: defender-scan-report
+          path: build\defender-scan-*.txt
+          if-no-files-found: ignore
+
+      - name: Upload artifact (Debug, optimized)
+        uses: actions/upload-artifact@v7
+        with:
+          name: KeePassPasskey-debug-unsigned
+          path: build\KeePassPasskey-*-debug-unsigned.zip
+
+      - name: Upload artifact (Release)
+        if: inputs.build_release
+        uses: actions/upload-artifact@v7
+        with:
+          name: KeePassPasskey-release-unsigned
+          path: |
+            build\KeePassPasskey-*.zip
+            !build\KeePassPasskey-*-debug-*.zip
+
+      - name: Upload artifact (Store MSIX)
+        if: inputs.build_store
+        uses: actions/upload-artifact@v7
+        with:
+          name: KeePassPasskey-store-msix
+          path: build\KeePassPasskeyProvider.Package_*_x64_Store.msix

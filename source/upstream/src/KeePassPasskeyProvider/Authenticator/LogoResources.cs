@@ -1,0 +1,31 @@
+﻿// SPDX-FileCopyrightText: Copyright (C) 2026 Uwe Koegel
+// SPDX-License-Identifier: GPL-3.0-or-later
+using System.Reflection;
+
+namespace KeePassPasskeyProvider.Authenticator;
+
+/// <summary>
+/// Loads the embedded SVG logos for light and dark Windows themes.
+/// Returned strings are base64-encoded UTF-8 SVG, as required by
+/// WebAuthNPluginAddAuthenticator (pwszLightThemeLogoSvg / pwszDarkThemeLogoSvg).
+/// </summary>
+internal static class LogoResources
+{
+#if STORE
+	public static string DarkThemeSvg { get; } = Load("logo-store-dark.svg");
+	public static string LightThemeSvg { get; } = Load("logo-store-light.svg");
+#else
+	public static string DarkThemeSvg { get; } = Load("logo-dark.svg");
+	public static string LightThemeSvg { get; } = Load("logo-light.svg");
+#endif
+
+	private static string Load(string fileName)
+	{
+		var asm = Assembly.GetExecutingAssembly();
+		using Stream stream = asm.GetManifestResourceStream(
+			$"KeePassPasskeyProvider.Resources.{fileName}")!;
+		using var ms = new MemoryStream();
+		stream.CopyTo(ms);
+		return Convert.ToBase64String(ms.ToArray());
+	}
+}

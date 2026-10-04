@@ -1,0 +1,462 @@
+// SPDX-FileCopyrightText: Copyright (C) 2026 Uwe Koegel
+// SPDX-License-Identifier: GPL-3.0-or-later
+using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
+using System.Text;
+using KeePassPasskeyShared;
+using KeePassPasskeyProvider.Authenticator.Native;
+using KeePassPasskeyShared.Ipc;
+using KeePassPasskeyShared.Settings;
+using KeePassPasskeyProvider.Util;
+using KeePassPasskeyProvider.Authenticator.UserVerification;
+
+namespace KeePassPasskeyProvider.Authenticator;
+
+/// <summary>
+/// Managed implementation of IPluginAuthenticator.
+/// </summary>
+#pragma warning disable CA1725 // "Raw" suffix frees the interface's name for the typed pointer cast from it.
+[ComVisible(true)]
+[ClassInterface(ClassInterfaceType.None)]
+public sealed class PluginAuthenticator : IPluginAuthenticator
+{
+	// Every COM activation creates its own instance, so a cancel can land on a different one than the
+	// operation it aborts. Keyed per process by transaction id, any instance can reach any operation.
+	private static readonly ConcurrentDictionary<Guid, InFlightOperation> _operations = new();
+
+	/// <param name="EncodedRequest">Kept because the platform signs a cancel over it, not over the transaction id.</param>
+	private sealed record InFlightOperation(CancellationTokenSource Cancellation, byte[] EncodedRequest);
+
+	private readonly PipeClient _pipeClient = new PipeClient(msg => Log.Debug(msg, nameof(PipeClient)));
+
+	// null = unknown (first call), true = last ping succeeded, false = last ping failed
+	private static bool? _lastPingReady;
+
+	/// <summary>
+	/// IPluginAuthenticator.MakeCredential implementation.
+	/// Decodes the CBOR request, verifies the signature, forwards to KeePass plugin,
+	/// and encodes the attestation response.
+	/// </summary>
+	public unsafe int MakeCredential(nint pRequestRaw, nint pResponseRaw)
+	{
+		// Read-only initial release: no registration or database writes.
+		return unchecked((int)0x80004001);
+	}
+
+	/// <summary>
+	/// IPluginAuthenticator.GetAssertion implementation.
+	/// Decodes the CBOR request, verifies the signature, forwards to KeePass plugin,
+	/// and encodes the assertion response.
+	/// </summary>
+	public unsafe int GetAssertion(nint pRequestRaw, nint pResponseRaw)
+	{
+		if (pRequestRaw == 0 || pResponseRaw == 0)
+			return HResults.E_INVALIDARG;
+
+		var pRequest = (WebAuthnPluginOperationRequest*)pRequestRaw;
+		var pResponse = (WebAuthnPluginOperationResponse*)pResponseRaw;
+		*pResponse = default;
+
+		Guid transactionId = pRequest->transactionId;
+
+		ComActivity.EnterOperation();
+		try
+		{
+			var cts = BeginOperation(transactionId, pRequest->pbEncodedRequest, pRequest->cbEncodedRequest);
+			Log.Info("entry");
+
+			// 1. Decode CBOR request
+			WebAuthnCtapCborGetAssertionRequest* pDecoded = null;
+			int hr1 = WebAuthnPluginApi.WebAuthNDecodeGetAssertionRequest(
+				pRequest->cbEncodedRequest, pRequest->pbEncodedRequest, &pDecoded);
+			Log.Info($"WebAuthNDecodeGetAssertionRequest hr=0x{hr1:X8}");
+			if (hr1 < 0) return hr1;
+
+			try
+			{
+				// 2. Verify request signature
+				int sigResult = VerifyRequestSignature(pRequest);
+				Log.Info($"SignatureVerifier hr=0x{sigResult:X8}");
+				if (sigResult < 0) return sigResult;
+
+				if (cts.IsCancellationRequested) { Log.Info("cancelled"); return HResults.NTE_USER_CANCELLED; }
+
+				// 3. Extract fields
+				string rpIdUtf8 = Encoding.UTF8.GetString(pDecoded->pbRpId, (int)pDecoded->cbRpId);
+				string clientDataHashB64 = Convert.ToBase64String(
+					new ReadOnlySpan<byte>(pDecoded->pbClientDataHash, (int)pDecoded->cbClientDataHash).ToArray());
+
+				CtapRequestDump.LogRequest(pDecoded);
+
+				var allowList = ExtractCredentialIds(pDecoded->CredentialList);
+
+				// 3b. Check KeePass reachability before prompting for verification.
+				int hrReady = CheckKeePassReady("Sign-in");
+				if (hrReady < HResults.S_OK) return hrReady;
+
+				// 4. User verification
+				var entry = LookupCredential(rpIdUtf8, allowList);
+				string uvUsername = entry?.UserName ?? string.Empty;
+				Log.Info($"credential lookup userName={uvUsername} title={entry?.Title ?? "(none)"}");
+
+				int hrUv = UserVerifierDispatcher.VerifyForSignIn(
+					new SignInVerification((nint)pRequest, pRequest->transactionId, rpIdUtf8, uvUsername,
+						// Null only when there is no entry, so a titleless one stays tellable from none.
+						entry == null ? null : entry.Title ?? "", entry?.DatabaseName, entry?.Icon),
+					cts.Token);
+				Log.Info($"UserVerification hr=0x{hrUv:X8}");
+				if (hrUv < 0) return hrUv;
+
+				// 5. Build JSON pipe request
+				var request = new GetAssertionRequest
+				{
+					RpId = rpIdUtf8,
+					ClientDataHash = clientDataHashB64,
+					AllowCredentials = allowList,
+				};
+
+				// 6. Send to KeePass plugin
+				Log.Info("sending pipe request");
+				var response = _pipeClient.GetAssertion(request);
+				if (response == null)
+				{
+					Log.Warn("pipe failed");
+					Notifier.ShowPipeError("Sign-in");
+					return HResults.E_FAIL;
+				}
+
+				if (response.ErrorCode != null)
+				{
+					Log.Warn($"KeePass error code={response.ErrorCode}, message={response.ErrorMessage}");
+					Notifier.ShowGetAssertionError(rpIdUtf8, uvUsername, response.ErrorCode, response.ErrorMessage);
+					return MapErrorCode(response.ErrorCode);
+				}
+
+				// 7. Encode assertion response
+				int hrEnc = EncodeAssertion(
+					response.AuthenticatorData, response.Signature, response.CredentialId, response.UserHandle,
+					response.UserName, response.UserDisplayName, out uint cbEncoded, out byte* pbEncoded);
+				Log.Info($"WebAuthNEncodeGetAssertionResponse hr=0x{hrEnc:X8} cb={cbEncoded}");
+				if (hrEnc < 0) return hrEnc;
+
+				pResponse->cbEncodedResponse = cbEncoded;
+				pResponse->pbEncodedResponse = pbEncoded;
+
+				Log.Info("success");
+				return HResults.S_OK;
+			}
+			finally
+			{
+				WebAuthnPluginApi.WebAuthNFreeDecodedGetAssertionRequest(pDecoded);
+			}
+		}
+		catch (Exception ex)
+		{
+			Log.Error($"exception {ex.GetType().Name}: {ex.Message}");
+			return Marshal.GetHRForException(ex);
+		}
+		finally
+		{
+			EndOperation(transactionId);
+			ComActivity.ExitOperation();
+		}
+	}
+
+	/// <summary>IPluginAuthenticator.CancelOperation implementation. Verifies the cancel signature and cancels the named operation.</summary>
+	public unsafe int CancelOperation(nint pCancelRequest)
+	{
+		ComActivity.MarkActivity();
+		if (pCancelRequest == 0) return HResults.E_INVALIDARG;
+
+		var pCancel = (WebAuthnPluginCancelOperationRequest*)pCancelRequest;
+		if (!_operations.TryGetValue(pCancel->transactionId, out var operation))
+			return HResults.NTE_NOT_FOUND;
+
+		// The platform signs a cancel over the encoded request of the operation being cancelled, not
+		// over the transaction id, which only says which operation to stop. Undocumented; established
+		// by trying candidate payloads against a real cancel.
+		int sigResult;
+		fixed (byte* pbRequest = operation.EncodedRequest)
+		{
+			sigResult = SignatureVerifier.VerifyIfKeyAvailable(
+				pbRequest, (uint)operation.EncodedRequest.Length,
+				pCancel->pbRequestSignature, pCancel->cbRequestSignature);
+		}
+		Log.Info($"CancelOperation signature hr=0x{sigResult:X8}");
+		if (sigResult < 0) return sigResult;
+
+		// The operation thread may have finished and disposed the source in the meantime.
+		try { operation.Cancellation.Cancel(); } catch (ObjectDisposedException) { }
+		return HResults.S_OK;
+	}
+
+	private static unsafe CancellationTokenSource BeginOperation(
+		Guid transactionId, byte* pbEncodedRequest, uint cbEncodedRequest)
+	{
+		var cts = new CancellationTokenSource();
+		if (_operations.TryRemove(transactionId, out var stale)) stale.Cancellation.Dispose();
+		_operations[transactionId] = new InFlightOperation(
+			cts, new ReadOnlySpan<byte>(pbEncodedRequest, (int)cbEncodedRequest).ToArray());
+		return cts;
+	}
+
+	private static void EndOperation(Guid transactionId)
+	{
+		if (_operations.TryRemove(transactionId, out var operation)) operation.Cancellation.Dispose();
+	}
+
+	/// <summary>
+	/// IPluginAuthenticator.GetLockStatus implementation.
+	/// Pings the KeePass plugin and reports PluginUnlocked when it responds Ready, otherwise PluginLocked.
+	/// </summary>
+	public unsafe int GetLockStatus(nint pLockStatusRaw)
+	{
+		ComActivity.MarkActivity();
+		if (pLockStatusRaw == 0) return HResults.E_INVALIDARG;
+		var pLockStatus = (PluginLockStatus*)pLockStatusRaw;
+
+		try
+		{
+			var response = _pipeClient.Ping();
+			bool ready = response?.Status == PingStatus.Ready;
+			Log.Info($"pipeOk={response != null} status={response?.Status} ready={ready} clientVersion={PipeConstants.Version} serverVersion={response?.Version}");
+
+			_lastPingReady = ready;
+			*pLockStatus = ready ? PluginLockStatus.PluginUnlocked : PluginLockStatus.PluginLocked;
+			return HResults.S_OK;
+		}
+		catch (Exception ex)
+		{
+			Log.Warn($"exception {ex.Message}");
+			*pLockStatus = PluginLockStatus.PluginLocked;
+			return HResults.S_OK;
+		}
+	}
+
+	/// <summary>
+	/// Pings KeePass to confirm it is reachable with an open database before the user is prompted
+	/// for verification, so both MakeCredential and GetAssertion fail fast (with a notification
+	/// already shown) instead of verifying first and only then discovering KeePass cannot proceed.
+	/// Returns S_OK when ready, otherwise the appropriate failure HRESULT.
+	/// </summary>
+	/// <param name="operation">Operation name used in the failure notification.</param>
+	private int CheckKeePassReady(string operation)
+	{
+		var ping = _pipeClient.Ping();
+		if (ping == null)
+		{
+			Log.Warn("ping pipe failed");
+			Notifier.ShowPipeError(operation);
+			return HResults.E_FAIL;
+		}
+
+		if (ping.Status == PingStatus.IncompatibleVersion)
+		{
+			Log.Warn($"version mismatch clientVersion={PipeConstants.Version} serverVersion={ping.Version}");
+			Notifier.ShowVersionMismatch(operation, PipeConstants.Version, ping.Version);
+			return HResults.E_FAIL;
+		}
+
+		if (ping.Status != PingStatus.Ready)
+		{
+			Log.Warn($"KeePass not ready status={ping.Status}");
+			Notifier.ShowPipeError(operation);
+			return HResults.E_FAIL;
+		}
+
+		return HResults.S_OK;
+	}
+
+	/// <summary>
+	/// The KeePass entry behind the credential, for the sign-in prompt's card. The Windows cache only
+	/// carries the user name, and it is a mirror that can lag behind a renamed entry.
+	/// </summary>
+	private CredentialInfo? LookupCredential(string rpId, List<string> allowList)
+	{
+		var response = _pipeClient.GetCredentials(new GetCredentialsRequest { RpId = rpId, AllowCredentials = allowList });
+		var credentials = response?.Credentials;
+		if (credentials == null || credentials.Count == 0) return null;
+
+		// With no allow list the platform picked a credential it does not name, so there is nothing to
+		// match on and the first is as good a guess as any. The plugin picks the one it signs with.
+		return credentials[0];
+	}
+
+	/// <summary>
+	/// Verifies the request signature by extracting fields from the request pointer.
+	/// </summary>
+	private static unsafe int VerifyRequestSignature(WebAuthnPluginOperationRequest* pRequest)
+		=> SignatureVerifier.VerifyIfKeyAvailable(
+			pRequest->pbEncodedRequest, pRequest->cbEncodedRequest,
+			pRequest->pbRequestSignature, pRequest->cbRequestSignature);
+
+	/// <summary>
+	/// Extracts credential IDs from a WebAuthn credential list and converts them to base64url.
+	/// </summary>
+	private static unsafe List<string> ExtractCredentialIds(WebAuthnCredentialList list)
+	{
+		var ids = new List<string>((int)list.cCredentials);
+		for (uint i = 0; i < list.cCredentials; i++)
+		{
+			var c = list.ppCredentials[i];
+			ids.Add(Base64Url.Encode(new ReadOnlySpan<byte>(c->pbId, (int)c->cbId).ToArray()));
+		}
+		return ids;
+	}
+
+	/// <summary>
+	/// Extracts COSE algorithm IDs from the RP's pubKeyCredParams list.
+	/// </summary>
+	private static unsafe List<int> ExtractPubKeyCredParams(WebAuthnCoseCredentialParameters credParams)
+	{
+		var algs = new List<int>((int)credParams.cCredentialParameters);
+		for (uint i = 0; i < credParams.cCredentialParameters; i++)
+			algs.Add(credParams.pCredentialParameters[i].lAlg);
+		return algs;
+	}
+
+	/// <summary>
+	/// Maps error codes from the KeePass plugin response to Windows HRESULTs.
+	/// Used by both MakeCredential and GetAssertion.
+	/// </summary>
+	private static int MapErrorCode(PipeErrorCode? code) => code switch
+	{
+		PipeErrorCode.DbLocked => HResults.E_FAIL,
+		PipeErrorCode.Duplicate => HResults.ERROR_ALREADY_EXISTS,
+		PipeErrorCode.NotFound => HResults.NTE_NOT_FOUND,
+		PipeErrorCode.UnsupportedAlgorithm => HResults.E_FAIL,
+		_ => HResults.E_FAIL,
+	};
+
+	/// <summary>
+	/// Encodes the attestation response (for make_credential).
+	/// Isolates the fixed-pinning block and WebAuthnCredentialAttestation struct construction.
+	/// </summary>
+	private static unsafe int EncodeAttestation(
+		byte[] authData, out uint cbEncoded, out byte* pbEncoded)
+	{
+		fixed (char* fmtPtr = "none")
+		fixed (byte* authPtr = authData)
+		{
+			var attestation = new WebAuthnCredentialAttestation
+			{
+				dwVersion = WebAuthnConstants.AttestationCurrentVersion,
+				pwszFormatType = fmtPtr,
+				cbAuthenticatorData = (uint)authData.Length,
+				pbAuthenticatorData = authPtr,
+				cbAttestation = 0,
+				pbAttestation = null,
+			};
+
+			uint cb = 0;
+			byte* pb = null;
+			int hr = WebAuthnPluginApi.WebAuthNEncodeMakeCredentialResponse(&attestation, &cb, &pb);
+			cbEncoded = cb;
+			pbEncoded = pb;
+			return hr;
+		}
+	}
+
+	/// <summary>
+	/// Encodes the assertion response (for get_assertion).
+	/// Isolates the 7-way fixed-pinning block and WebAuthnCtapCborGetAssertionResponse struct construction.
+	/// Converts base64/base64url strings to byte arrays internally.
+	/// </summary>
+	private static unsafe int EncodeAssertion(
+		string? authDataB64, string? signatureB64,
+		string? credIdB64, string? userHandleB64,
+		string? userName, string? userDisplayName,
+		out uint cbEncoded, out byte* pbEncoded)
+	{
+		// Convert base64/base64url strings to byte arrays
+		byte[] authDataBytes = Convert.FromBase64String(authDataB64 ?? string.Empty);
+		byte[] signatureBytes = Convert.FromBase64String(signatureB64 ?? string.Empty);
+		byte[] userHandleBytes = string.IsNullOrEmpty(userHandleB64)
+			? Array.Empty<byte>()
+			: Base64Url.Decode(userHandleB64);
+		byte[] credIdBytes = string.IsNullOrEmpty(credIdB64)
+			? Array.Empty<byte>()
+			: Base64Url.Decode(credIdB64);
+
+		fixed (byte* authPtr = authDataBytes)
+		fixed (byte* sigPtr = signatureBytes)
+		fixed (byte* uhPtr = userHandleBytes.Length > 0 ? userHandleBytes : new byte[1])
+		fixed (byte* credPtr = credIdBytes.Length > 0 ? credIdBytes : new byte[1])
+		fixed (char* typePtr = WebAuthnConstants.CredentialTypePublicKey)
+		fixed (char* namePtr = userName ?? string.Empty)
+		fixed (char* dispPtr = (userDisplayName ?? userName) ?? string.Empty)
+		{
+			var cred = new WebAuthnCredential
+			{
+				dwVersion = WebAuthnConstants.CredentialVersion,
+				cbId = (uint)credIdBytes.Length,
+				pbId = credPtr,
+				pwszCredentialType = typePtr,
+			};
+
+			// Build the assertion response struct (full v6 size, zero-initialized)
+			var assertionResp = new WebAuthnCtapCborGetAssertionResponse();
+			assertionResp.WebAuthNAssertion.dwVersion = WebAuthnConstants.AssertionCurrentVersion;
+			assertionResp.WebAuthNAssertion.Credential = cred;
+			assertionResp.WebAuthNAssertion.cbAuthenticatorData = (uint)authDataBytes.Length;
+			assertionResp.WebAuthNAssertion.pbAuthenticatorData = authPtr;
+			assertionResp.WebAuthNAssertion.cbSignature = (uint)signatureBytes.Length;
+			assertionResp.WebAuthNAssertion.pbSignature = sigPtr;
+			assertionResp.WebAuthNAssertion.cbUserId = (uint)userHandleBytes.Length;
+			assertionResp.WebAuthNAssertion.pbUserId = userHandleBytes.Length > 0 ? uhPtr : null;
+			assertionResp.dwNumberOfCredentials = 1;
+			assertionResp.lUserSelected = 1; // TRUE
+
+			// Build user info if we have a user handle
+			WebAuthnUserEntityInformation userInfo = default;
+			if (userHandleBytes.Length > 0)
+			{
+				userInfo.dwVersion = WebAuthnConstants.UserEntityVersion;
+				userInfo.cbId = (uint)userHandleBytes.Length;
+				userInfo.pbId = uhPtr;
+				userInfo.pwszName = namePtr;
+				userInfo.pwszIcon = null;
+				userInfo.pwszDisplayName = dispPtr;
+				assertionResp.pUserInformation = &userInfo;
+			}
+
+			uint cb = 0;
+			byte* pb = null;
+			int hr = WebAuthnPluginApi.WebAuthNEncodeGetAssertionResponse(&assertionResp, &cb, &pb);
+			cbEncoded = cb;
+			pbEncoded = pb;
+			return hr;
+		}
+	}
+}
+
+/// <summary>
+/// IClassFactory implementation. Creates a new PluginAuthenticator per call.
+/// </summary>
+[ComVisible(true)]
+[ClassInterface(ClassInterfaceType.None)]
+public sealed class ClassFactory : IClassFactory
+{
+	public int CreateInstance(nint pUnkOuter, in Guid riid, out nint ppvObject)
+	{
+		ComActivity.MarkActivity();
+		ppvObject = 0;
+		if (pUnkOuter != 0) return HResults.CLASS_E_NOAGGREGATION;
+
+		var auth = new PluginAuthenticator();
+		if (riid == ComIids.IID_IPluginAuthenticator ||
+			riid == ComIids.IID_IUnknown)
+		{
+			ppvObject = Marshal.GetComInterfaceForObject<PluginAuthenticator, IPluginAuthenticator>(auth);
+			return HResults.S_OK;
+		}
+		return HResults.E_NOINTERFACE;
+	}
+
+	public int LockServer(bool fLock)
+	{
+		// No-op - our process lifecycle is managed by the COM message loop.
+		return HResults.S_OK;
+	}
+}
+#pragma warning restore CA1725

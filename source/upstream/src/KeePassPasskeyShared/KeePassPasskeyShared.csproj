@@ -1,0 +1,19 @@
+<!-- SPDX-FileCopyrightText: Copyright (C) 2026 Uwe Koegel -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0-windows</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<RootNamespace>KeePassPasskeyShared</RootNamespace>
+		<AssemblyName>KeePassPasskeyShared</AssemblyName>
+		<OutputPath>..\..\build\$(Configuration)\$(TargetFramework)\</OutputPath>
+		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+		<PackageReference Include="PeterO.Cbor" Version="4.5.5" />
+	</ItemGroup>
+
+</Project>
