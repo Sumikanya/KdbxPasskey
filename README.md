@@ -1,57 +1,77 @@
 # KDBX Passkey
 
-Windows 通行密钥提供程序：从本地 KDBX 数据库读取已有通行密钥，通过 Windows Hello 在支持的应用和网站中认证。
+[下载](https://github.com/Sumikanya/KdbxPasskey/releases/latest) · [安装](#安装) · [使用](#使用) · [源码构建](BUILDING.md)
 
-**当前版本：0.2.7 · Windows x64 · GPL-3.0-or-later**
+将 KDBX 数据库中的通行密钥用于 Windows 登录。基于 [KeePassPasskey](https://github.com/yusei36/KeePassPasskey) 开发，直接读取本地数据库，无需安装 KeePass 2 插件。
 
-这是独立的实验性项目，基于 [KeePassPasskey](https://github.com/yusei36/KeePassPasskey) 的提供程序源码开发，不是 KeePassXC 或微软官方产品。尚未经过独立安全审计。
-
-## 功能
-
-- 只读打开 KDBX，支持主密码及密钥文件，不创建或写回数据库。
-- 读取 KeePassXC 的 `KPEX_PASSKEY_*` 通行密钥字段，支持 ES256/P-256、Ed25519、RS256。
-- Windows Hello 验证、可选手动确认、多账户选择、闲置及锁屏锁定。
-- WPF 深浅主题、站点分组、搜索及紧凑列表；仅凭据区域滚动。
-- 关闭或最小化到托盘；本次运行加密暂存主密码，退出后清除。
-- 保存数据库路径；锁定后可在主窗口通过 Hello 恢复会话。
-
-KDBX 是 KeePass 系列共享的数据库格式，不是 KeePassXC 独有。能否解析数据库取决于加密方式及解锁机制；能打开数据库也不代表其中有兼容的通行密钥。
+可以继续用 KeePassXC 管理数据库，KDBX Passkey 负责向 Windows 提供其中已有的通行密钥。目前只支持认证，不支持创建通行密钥。
 
 ## 系统要求
 
-Windows 11 x64，具备第三方通行密钥提供程序接口（包最低版本为 24H2 / build 26100；接口是否可用还取决于系统更新）。需要配置 Windows Hello。当前不支持硬件 challenge-response 解锁。
+- Windows 11 24H2 或更新版本，x64；系统需支持第三方通行密钥提供程序。
+- 已配置 Windows Hello（PIN、指纹或人脸）。
+- 包含 KeePassXC 兼容通行密钥的 KDBX 数据库。
 
-目标应用必须调用支持第三方提供程序的 Windows 认证接口。软件不能让原本不支持通行密钥的登录窗口自动支持通行密钥。
+## 安装
 
-## 安装与使用
+1. 从 [Releases](https://github.com/Sumikanya/KdbxPasskey/releases/latest) 下载 `.msix` 安装包和 `KdbxPasskey.cer`。
+2. 右键证书 → **安装证书** → **本地计算机** → **将所有证书放入下列存储** → **受信任的人（Trusted People）**。
+3. 双击 `.msix` 安装，从开始菜单打开 **KDBX Passkey**。
+4. 在应用的 **设置 → Windows 通行密钥 → 打开设置** 中，启用 KDBX Passkey。
 
-从本仓库的 **Releases** 页面获取同一版本的 MSIX、公开证书和校验和。
+当前安装包使用自签名证书，首次安装需要手动信任。证书指纹和文件校验和随版本提供；请勿将证书导入“受信任的根证书颁发机构”。
 
-当前是自签名测试版本：确认来源和证书指纹后，手动将公开的 `KdbxPasskey.cer` 导入 **本地计算机 → 受信任的人（Trusted People）**，再安装 `KdbxPasskey-0.2.7-x64.msix`。此步骤可能需要管理员权限；不要导入到根证书存储。签名私钥不会发布。参见 [分发及卸载说明](docs/DISTRIBUTION.md)。
+## 使用
 
-1. 从开始菜单打开 KDBX Passkey，在 Windows 通行密钥设置中启用提供程序。
-2. 选择数据库，输入主密码及可选密钥文件，解锁并同步。
-3. 在支持的应用中使用通行密钥，完成 Windows Hello 和所需账户确认。
-4. 关闭窗口后程序留在通知区域；真正退出请使用托盘菜单的“退出”。
+选择 `.kdbx` 文件，输入主密码，按需选择密钥文件，然后解锁。应用会读取通行密钥并同步到 Windows。
 
-数据库锁定后，先在主窗口恢复会话，再重试网站登录。会话恢复和网站登录分别验证 Hello。主密码只在进程内加密暂存；退出、重启或“忘记本次密码”后需要重新输入。托管内存中仍可能短暂存在明文副本。
+在网站或应用中选择通行密钥登录，再选择 KDBX Passkey，完成 Windows Hello 验证。如果同一站点有多个账户，会提示选择账户。
 
-本程序读取解锁时的数据库快照。使用 KeePassXC 修改数据库后，请重新解锁以刷新。KDBX 和密钥文件始终由用户管理，卸载不会删除它们。
+### 后台运行与锁定
 
-## 构建与贡献
+关闭窗口或最小化后，程序保留在系统托盘。点击托盘图标可以恢复窗口，右键菜单可锁定数据库或退出程序。
 
-- [构建说明](BUILDING.md)：Windows、Python 3.11、.NET 10 和 Windows SDK；支持不签名构建。
-- [贡献指南](CONTRIBUTING.md)与[安全说明](SECURITY.md)。
-- [验证记录](VALIDATION.md)与[优化记录](OPTIMIZATION.md)。
+数据库路径会保存。主密码仅在本次运行期间加密暂存，锁定后可在主窗口通过 Windows Hello 重新解锁。退出程序或选择“忘记本次密码”后，需要重新输入主密码。
 
-0.2.7 通过 30 项后端测试、4 项管道测试、11 个界面场景及签名完整性校验；用户已于 2026-10-05 反馈：安装后可成功进行通行密钥认证。该结果限于用户已测试的场景，不代表所有网站或所有 Windows Hello 验证方式均已完成回归；干净卸载尚未验证。请勿将这些检查理解为全面安全保证。
+设置中可调整闲置锁定时间、锁屏时锁定，以及登录时是否额外手动确认。网站认证仍需要 Windows Hello。
 
-## AI 辅助开发说明
+### 数据库更新
 
-本项目使用 OpenAI Codex / ChatGPT 辅助开发。项目中的新增代码、界面调整、构建脚本及文档由 AI 协助生成和修改；项目维护者提出需求、决定功能方向，并提供安装后的实际使用反馈。现有上游代码的作者与署名见 [NOTICE.md](NOTICE.md)。
+程序读取的是解锁时的数据库内容。在 KeePassXC 中新增、删除或修改通行密钥后，需要锁定并重新解锁，才能加载最新内容。
 
-AI 生成内容可能存在错误或遗漏。自动化检查和用户已完成的实测范围见 [验证记录](VALIDATION.md)，不代表独立安全审计或所有场景均已通过验证。欢迎通过 Issue 和 Pull Request 报告问题、审查代码与改进项目。
+## 支持范围
+
+- 主密码、密钥文件，或两者组合解锁。
+- KeePassXC 的 `KPEX_PASSKEY_*` 通行密钥格式。
+- ES256（P-256）、Ed25519 和 RS256。
+- 站点分组、账户搜索、深浅主题。
+
+只读访问数据库，不写回文件。不支持硬件 challenge-response 解锁。网站或应用必须支持 Windows 通行密钥接口；仅有普通密码条目的数据库不会显示通行密钥。
+
+## 常见问题
+
+**Windows 中找不到提供程序？**
+
+确认已安装 MSIX、从开始菜单启动过应用，并在 Windows 通行密钥设置中启用 KDBX Passkey。直接运行源码目录中的 EXE 不具备安装包身份。
+
+**数据库解锁了，但没有凭据？**
+
+检查数据库是否包含兼容的通行密钥。回收站、历史记录和禁用搜索分组中的条目不会被使用；解析问题可在“诊断”页查看。
+
+**锁定后无法登录？**
+
+先打开主窗口解锁数据库，再重试登录。恢复数据库会话和网站登录是两次独立的身份验证。
+
+**如何卸载？**
+
+在 Windows 设置中卸载应用。手动导入的证书需另行管理，不会随 MSIX 自动删除。卸载清理尚未完成测试，详见 [分发说明](docs/DISTRIBUTION.md)。
+
+## 开发
+
+构建环境：Windows、Python 3.11、.NET 10 SDK 和 Windows SDK。步骤见 [BUILDING.md](BUILDING.md)。问题和改进建议可提交到 [Issues](https://github.com/Sumikanya/KdbxPasskey/issues)，也欢迎 Pull Request。
+
+本项目使用 Codex / ChatGPT 辅助编写代码和文档。
 
 ## 许可与致谢
 
-遵循 **GPL-3.0-or-later**，见 [LICENSE](LICENSE) 和 [NOTICE.md](NOTICE.md)。感谢 KeePassPasskey、KeePassXC、PyKeePass 和 WPF UI 的开发者。保留的上游源码、署名与第三方许可随项目提供。
+[GPL-3.0-or-later](LICENSE)。Windows 提供程序基于 [KeePassPasskey](https://github.com/yusei36/KeePassPasskey)，界面使用 WPF UI，数据库读取使用 PyKeePass。上游署名与第三方许可见 [NOTICE.md](NOTICE.md)。
