@@ -65,7 +65,7 @@ if (-not (Test-Path -LiteralPath $taskMakeAppx)) {
     $taskMakeAppx = if ($taskSdkTool) { $taskSdkTool } else { (Get-Command makeappx.exe -ErrorAction Stop).Source }
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $taskRoot 'dist') | Out-Null
-& $taskMakeAppx pack /d '.\work\package-native' /p '.\dist\KdbxPasskey-0.2.7-x64.msix' /o /l
+& $taskMakeAppx pack /d '.\work\package-native' /p '.\dist\KdbxPasskey-0.2.8-x64.msix' /o /l
 if ($LASTEXITCODE -ne 0) { throw 'MSIX packaging failed' }
 # Remove only this build's temporary private signing key; .cer contains no private key.
 $taskKey = [IO.Path]::GetFullPath((Join-Path $taskRoot 'work\signing.pfx'))
@@ -82,5 +82,5 @@ if (-not $SkipSigning) { try {
 } }
 & $taskPython work/finalize.py
 if ($LASTEXITCODE -ne 0) { throw 'Source kit and checksums failed' }
-if ($SkipSigning) { Write-Host 'Built unsigned dist\KdbxPasskey-0.2.7-x64.msix; signing is required before installation.' }
-else { Write-Host 'Built and verified dist\KdbxPasskey-0.2.7-x64.msix. Nothing installed.' }
+if ($SkipSigning) { Write-Host 'Built unsigned dist\KdbxPasskey-0.2.8-x64.msix; signing is required before installation.' }
+else { Write-Host 'Built and verified dist\KdbxPasskey-0.2.8-x64.msix. Nothing installed.' }

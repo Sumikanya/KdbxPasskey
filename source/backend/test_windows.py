@@ -62,6 +62,16 @@ class WindowsTests(unittest.TestCase):
                 server.close()
                 time.sleep(.5)
 
+    def test_interactive_pipe_checks_live_connection(self):
+        with patch('windows.current_package', return_value='fixture'), patch('windows.verify_client', return_value=True):
+            server = windows.Server(lambda request, connected: dict(connected=connected()), 'fixture.exe', self.fail, interactive=True)
+            server.start()
+            try:
+                self.assertTrue(send(dict(type='ensure_unlocked'))['connected'])
+            finally:
+                server.close()
+                time.sleep(.5)
+
     def test_real_package_verification_rejects_unpackaged_process(self):
         pipe = windows.Server(None, '', None).create_pipe(True)
         client = win32file.CreateFile(windows.PIPE, win32con.GENERIC_READ | win32con.GENERIC_WRITE,

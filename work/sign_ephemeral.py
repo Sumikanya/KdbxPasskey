@@ -43,7 +43,7 @@ if not context:
     raise c.WinError(c.get_last_error())
 try:
     index=w.DWORD(0)
-    file=FileInfo(c.sizeof(FileInfo),str(root/'dist/KdbxPasskey-0.2.7-x64.msix'),None)
+    file=FileInfo(c.sizeof(FileInfo),str(root/'dist/KdbxPasskey-0.2.8-x64.msix'),None)
     subject=Subject(c.sizeof(Subject),ptr(index),1,ptr(file))
     info=CertStore(c.sizeof(CertStore),context,8,store)
     cert=Cert(c.sizeof(Cert),2,ptr(info),None)

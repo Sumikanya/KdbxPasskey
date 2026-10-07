@@ -34,3 +34,23 @@ foreach (var mode in new[] { "silent", "partial", "valid", "oversized" })
     await peer;
     Console.WriteLine($"PASS {mode}: {clock.ElapsedMilliseconds}ms");
 }
+
+// Cancellation must close an in-progress unlock pipe, allowing the backend to dismiss it.
+{
+    var name = "kdbx-unlock-cancel-" + Guid.NewGuid();
+    using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+    using var cancel = new CancellationTokenSource();
+    var call = Task.Run(() => new PipeClient(pipeName: name).EnsureUnlocked("example.test", cancel.Token));
+    await server.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(5));
+    var header = new byte[4];
+    await server.ReadExactlyAsync(header);
+    var body = new byte[BitConverter.ToInt32(header)];
+    await server.ReadExactlyAsync(body);
+    var request = Encoding.UTF8.GetString(body);
+    if (!request.Contains("ensure_unlocked") || !request.Contains("example.test")) throw new Exception("Invalid unlock request");
+    cancel.Cancel();
+    if (await call.WaitAsync(TimeSpan.FromSeconds(2)) != null) throw new Exception("Cancellation ignored");
+    var eof = await server.ReadAsync(new byte[1]).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+    if(eof != 0) throw new Exception("Unlock pipe remained open");
+    Console.WriteLine("PASS unlock cancellation and pipe closure");
+}

@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 root=Path(__file__).resolve().parents[1]
 out=root/'work/package-native/ThirdPartyLicenses'
 out.mkdir(parents=True,exist_ok=True)
-notices=['KDBX Passkey 0.2.7 - Third-party notices\n',
+notices=['KDBX Passkey 0.2.8 - Third-party notices\n',
          'Windows provider: KeePassPasskey, Copyright 2026 Uwe Koegel, GPL-3.0-or-later.\n',
          'Source: https://github.com/yusei36/KeePassPasskey\n']
 for dist in metadata.distributions():

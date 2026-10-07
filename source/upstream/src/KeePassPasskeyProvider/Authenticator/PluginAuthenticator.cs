@@ -91,7 +91,7 @@ public sealed class PluginAuthenticator : IPluginAuthenticator
 				var allowList = ExtractCredentialIds(pDecoded->CredentialList);
 
 				// 3b. Check KeePass reachability before prompting for verification.
-				int hrReady = CheckKeePassReady("Sign-in");
+				int hrReady = CheckKeePassReady("Sign-in", rpIdUtf8, cts.Token);
 				if (hrReady < HResults.S_OK) return hrReady;
 
 				// 4. User verification
@@ -240,7 +240,7 @@ public sealed class PluginAuthenticator : IPluginAuthenticator
 	/// Returns S_OK when ready, otherwise the appropriate failure HRESULT.
 	/// </summary>
 	/// <param name="operation">Operation name used in the failure notification.</param>
-	private int CheckKeePassReady(string operation)
+	private int CheckKeePassReady(string operation, string rpId, CancellationToken cancellation)
 	{
 		var ping = _pipeClient.Ping();
 		if (ping == null)
@@ -259,9 +259,9 @@ public sealed class PluginAuthenticator : IPluginAuthenticator
 
 		if (ping.Status != PingStatus.Ready)
 		{
-			Log.Warn($"KeePass not ready status={ping.Status}");
-			Notifier.ShowPipeError(operation);
-			return HResults.E_FAIL;
+            var unlocked = _pipeClient.EnsureUnlocked(rpId, cancellation);
+            if (cancellation.IsCancellationRequested || unlocked == null || unlocked.ErrorCode != null)
+                return HResults.NTE_USER_CANCELLED;
 		}
 
 		return HResults.S_OK;

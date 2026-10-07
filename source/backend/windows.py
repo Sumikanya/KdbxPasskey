@@ -129,7 +129,8 @@ def write_response(pipe, response):
 
 
 class Server:
-    def __init__(self, handler, provider_path, report):
+    def __init__(self, handler, provider_path, report, interactive=False):
+        self.interactive = interactive
         self.handler = handler
         self.provider_path = provider_path
         self.report = report
@@ -190,7 +191,13 @@ class Server:
             if not verify_client(pipe, self.provider_path, self.package):
                 return
             request = read_request(pipe)
-            response = self.handler(request)
+            def connected():
+                try:
+                    win32pipe.PeekNamedPipe(pipe, 0)
+                    return not self.stopping.is_set()
+                except pywintypes.error:
+                    return False
+            response = self.handler(request, connected) if self.interactive else self.handler(request)
             write_response(pipe, response)
         except Exception:
             pass  # Never log raw requests, usernames, hashes or keys.

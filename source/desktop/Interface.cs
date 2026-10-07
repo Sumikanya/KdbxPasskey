@@ -56,7 +56,7 @@ public sealed partial class MainWindow
         shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         shell.RowDefinitions.Add(new RowDefinition());
         var title = new Ui.TitleBar { Title = "KDBX Passkey", Height = 52, Icon = Glyph(Ui.SymbolRegular.Key24, 18, "KdbxAccentIcon") };
-        title.TrailingContent = new TextBlock { Text = "0.2.7", FontSize = 12, Opacity = .5, Margin = new Thickness(0,0,20,0), VerticalAlignment = VerticalAlignment.Center };
+        title.TrailingContent = new TextBlock { Text = "0.2.8", FontSize = 12, Opacity = .5, Margin = new Thickness(0,0,20,0), VerticalAlignment = VerticalAlignment.Center };
         shell.Children.Add(title);
 
         navigation.OpenPaneLength = 220;
@@ -131,6 +131,7 @@ public sealed partial class MainWindow
         metrics=stats; metrics.Visibility=Visibility.Collapsed; hero.Children.Add(stats);
         page.Children.Add(Surface(hero,24));
 
+        BuildUnlockRequestPanel(page);
         BuildSessionPanel(page);
         var form=new StackPanel();
         form.Children.Add(Field("数据库文件",database,()=>Choose(database,"KeePass 数据库|*.kdbx")));
@@ -278,7 +279,7 @@ public sealed partial class MainWindow
     {
         var page=PageBody("关于","KDBX Passkey · 本地通行密钥提供程序");
         var body=new StackPanel();
-        body.Children.Add(Text("KDBX Passkey 0.2.7",24,FontWeights.SemiBold));
+        body.Children.Add(Text("KDBX Passkey 0.2.8",24,FontWeights.SemiBold));
         body.Children.Add(BodyText("独立读取 KDBX 数据库中的通行密钥，为 Windows 提供认证。",14,new Thickness(0,12,0,24)));
         body.Children.Add(Text("界面：WPF UI / Fluent",14));
         body.Children.Add(Text("认证：基于 KeePassPasskey",14));

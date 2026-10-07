@@ -105,7 +105,7 @@ public sealed partial class MainWindow : Ui.FluentWindow
         }
         if(preview) preferredTheme=previewScenario?.Contains("system-")==true ? 0 : darkPreview ? 2 : 1;
         SetResourceReference(ForegroundProperty,"TextFillColorPrimaryBrush");
-        Title = "KDBX Passkey 0.2.7"; Width = 1080; Height = 800; MinWidth = 880; MinHeight = 620;
+        Title = "KDBX Passkey 0.2.8"; Width = 1080; Height = 800; MinWidth = 880; MinHeight = 620;
         if(previewScenario?.Contains("compact")==true) { Width=880; Height=620; }
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ExtendsContentIntoTitleBar = true; WindowBackdropType = Wpf.Ui.Controls.WindowBackdropType.Mica; ApplyFluentTheme();
@@ -148,6 +148,11 @@ public sealed partial class MainWindow : Ui.FluentWindow
         if(path.Contains("session")) {
             pendingSecret=new SessionSecret("temporary-preview-secret"); pendingPath="Personal.kdbx"; AcceptSession();
             using var locked=JsonDocument.Parse("{\"type\":\"locked\",\"message\":\"数据库已锁定\"}"); Receive(locked.RootElement);
+        }
+        if(path.Contains("login-unlock")) {
+            using var request=JsonDocument.Parse("{\"type\":\"unlock_required\",\"token\":\"preview\",\"rp\":\"example.com\"}");
+            Receive(request.RootElement);
+            if(unlockRequestPanel.Visibility != Visibility.Visible) throw new InvalidOperationException("Unlock request missing");
         }
         if(path.Contains("approval")) {
             using var fixture=JsonDocument.Parse("{\"token\":\"preview-approval\",\"rp\":\"example.com\",\"choices\":[{\"credentialId\":\"example-id\",\"userName\":\"hello@example.com\",\"title\":\"Personal account\"}]}");
@@ -321,6 +326,13 @@ public sealed partial class MainWindow : Ui.FluentWindow
             case "error": case "cancelled": RejectPendingSession(); status.Text = m.GetProperty("message").GetString(); unlock.IsEnabled = true; break;
             case "busy": status.Text = "正在解锁数据库…"; unlock.IsEnabled = false; break;
             case "idle": unlock.IsEnabled = true; break;
+            case "unlock_required": ShowUnlockRequest(m); break;
+            case "unlock_request_closed":
+                if (unlockRequestToken == m.GetProperty("token").GetString()) {
+                    unlockRequestToken = null;
+                    unlockRequestPanel.Visibility = Visibility.Collapsed;
+                }
+                break;
             case "approve": ShowApproval(m); break;
             case "approval_closed": if (approvals.TryGetValue(m.GetProperty("token").GetString()!, out var window)) window.Close(); break;
         }

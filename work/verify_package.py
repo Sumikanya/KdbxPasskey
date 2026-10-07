@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
 root = Path(__file__).resolve().parents[1]
-package = root/'dist/KdbxPasskey-0.2.7-x64.msix'
+package = root/'dist/KdbxPasskey-0.2.8-x64.msix'
 with zipfile.ZipFile(package) as z:
     assert not any(name.lower().endswith('.pdb') for name in z.namelist()), 'Debug symbols must stay outside the installation package'
     for required in ('KdbxPasskey.exe', 'Provider/KeePassPasskeyProvider.exe', 'Backend/KdbxBackend.exe'):

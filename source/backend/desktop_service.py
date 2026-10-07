@@ -20,6 +20,7 @@ class DesktopService:
         self.require_confirmation = True
         self.busy = False
         self.pending = {}
+        self.unlock_waiters = {}
         self.sequence = 0
         self.closing = False
         self.server = None
@@ -38,7 +39,7 @@ class DesktopService:
             if current_package():
                 if not self.provider.is_file():
                     raise RuntimeError('provider missing')
-                self.server = Server(lambda req: handle(self.store, req, self.approve), str(self.provider), lambda _: self.emit('error', message='系统认证通信异常。'))
+                self.server = Server(self.handle_request, str(self.provider), lambda _: self.emit('error', message='系统认证通信异常。'), interactive=True)
                 self.server.start()
                 threading.Thread(target=self.register, daemon=True).start()
             else:
@@ -48,6 +49,41 @@ class DesktopService:
             self.emit('error', message='系统认证服务或会话锁定监测启动失败。')
         threading.Thread(target=self.idle, daemon=True).start()
         self.emit('locked', message='数据库已锁定')
+
+    def handle_request(self, request, connected=lambda: True, timeout=120):
+        if request.get('type') != 'ensure_unlocked':
+            return handle(self.store, request, self.approve)
+        failed = dict(type='ensure_unlocked', errorCode='db_locked', errorMessage='解锁已取消或超时。')
+        rp = request.get('rpId')
+        if request.get('protocolVersion') != 1 or not isinstance(rp, str) or not rp or len(rp) > 253:
+            return failed
+        with self.state_gate:
+            if self.closing or not self.ready:
+                return failed
+            if self.store.unlocked:
+                return dict(type='ensure_unlocked')
+            # One foreground unlock at a time. A second login cannot replace its context.
+            if self.unlock_waiters:
+                return failed
+            self.sequence += 1
+            token = str(self.sequence)
+            cancelled = threading.Event()
+            self.unlock_waiters[token] = cancelled
+            self.emit('unlock_required', token=token, rp=rp)
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and connected():
+                with self.state_gate:
+                    if cancelled.is_set() or self.closing:
+                        return failed
+                    if self.store.unlocked:
+                        return dict(type='ensure_unlocked')
+                cancelled.wait(.1)
+            return failed
+        finally:
+            with self.state_gate:
+                self.unlock_waiters.pop(token, None)
+            self.emit('unlock_request_closed', token=token)
 
     def session_lock(self):
         with self.state_gate:
@@ -97,8 +133,11 @@ class DesktopService:
             except Exception:
                 self.emit('sync', busy=False, success=False, message='Windows 凭据同步失败，请重试。')
 
-    def lock(self, message='数据库已锁定'):
+    def lock(self, message='数据库已锁定', preserve_unlock=False):
         with self.state_gate:
+            if not preserve_unlock:
+                for cancelled in self.unlock_waiters.values():
+                    cancelled.set()
             self.epoch += 1
             self.store.lock()
             for response in self.pending.values():
@@ -114,7 +153,7 @@ class DesktopService:
             if self.busy or not self.ready:
                 self.emit('error', message='服务未就绪或正在解锁。')
                 return
-            self.lock()
+            self.lock(preserve_unlock=True)
             self.busy = True
             epoch = self.epoch
         self.emit('busy')
@@ -178,6 +217,11 @@ class DesktopService:
         kind = request.get('type')
         if kind == 'unlock':
             self.unlock(request)
+        elif kind == 'cancel_unlock_request':
+            with self.state_gate:
+                cancelled = self.unlock_waiters.get(request.get('token'))
+                if cancelled is not None:
+                    cancelled.set()
         elif kind == 'lock':
             self.lock()
         elif kind == 'approval':

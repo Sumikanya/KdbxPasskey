@@ -25,7 +25,7 @@ def assemble(root):
      xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
      xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
      IgnorableNamespaces="uap rescap com">
-     <Identity Name="KdbxPasskey" Publisher="CN=KDBX Passkey Local" Version="0.2.7.0" ProcessorArchitecture="x64" />
+     <Identity Name="KdbxPasskey" Publisher="CN=KDBX Passkey Local" Version="0.2.8.0" ProcessorArchitecture="x64" />
      <Properties><DisplayName>KDBX Passkey</DisplayName><PublisherDisplayName>Local build</PublisherDisplayName><Logo>Assets\\StoreLogo.png</Logo></Properties>
      <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.26100.0" MaxVersionTested="10.0.26300.0" /></Dependencies>
      <Resources><Resource Language="zh-cn" /><Resource Language="en-us" /></Resources>
@@ -46,7 +46,7 @@ def assemble(root):
     ET.fromstring(manifest)
     (package/'AppxManifest.xml').write_text(manifest, encoding='utf-8')
     shutil.copy2(upstream/'LICENSE', package/'LICENSE.txt')
-    (package/'SOURCE.txt').write_text('''KDBX Passkey 0.2.7 (local prototype)
+    (package/'SOURCE.txt').write_text('''KDBX Passkey 0.2.8 (local prototype)
     Windows provider derived from https://github.com/yusei36/KeePassPasskey (GPL-3.0-or-later), Copyright 2026 Uwe Koegel.
     Original project branding/assets remain licensed under that project's license.
     Native WPF UI, read-only KDBX store and IPC backend: GPL-3.0-or-later.

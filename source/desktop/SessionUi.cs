@@ -21,6 +21,36 @@ public sealed partial class MainWindow
     readonly Ui.Button helloUnlock=new() { Content="Windows Hello 解锁", Appearance=Ui.ControlAppearance.Primary };
     readonly TextBlock sessionDescription=new() { TextWrapping=TextWrapping.Wrap };
 
+    string? unlockRequestToken;
+    Border unlockRequestPanel = null!;
+    readonly TextBlock unlockRequestText = new() { TextWrapping=TextWrapping.Wrap };
+
+    void BuildUnlockRequestPanel(StackPanel page)
+    {
+        var body = new StackPanel();
+        body.Children.Add(unlockRequestText);
+        body.Children.Add(Button("取消本次登录", () => {
+            if (unlockRequestToken != null)
+                Send(new { type="cancel_unlock_request", token=unlockRequestToken });
+        }));
+        unlockRequestPanel = Surface(body, 16);
+        unlockRequestPanel.Margin = new Thickness(0,16,0,0);
+        unlockRequestPanel.Visibility = Visibility.Collapsed;
+        page.Children.Add(unlockRequestPanel);
+    }
+
+    void ShowUnlockRequest(System.Text.Json.JsonElement message)
+    {
+        unlockRequestToken = message.GetProperty("token").GetString();
+        unlockRequestText.Text = message.GetProperty("rp").GetString() + " 正在请求登录。请解锁数据库，完成后将自动继续本次认证。";
+        unlockRequestPanel.Visibility = Visibility.Visible;
+        ShowMainWindow();
+        navigation.Navigate(pageTypes[0]);
+        UpdateSessionPanel();
+        if (rememberedSecret == null) { connection.IsExpanded = true; password.Focus(); }
+        else helloUnlock.Focus();
+    }
+
     void InitializeTray()
     {
         try { tray=new TrayIcon(this,ShowMainWindow,()=>Send(new { type="lock" }),()=> { ForgetSession(); Send(new { type="lock" }); },()=> { exitRequested=true; Close(); }); }

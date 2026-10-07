@@ -6,6 +6,56 @@ from pykeepass import create_database
 from desktop_service import DesktopService
 
 class DesktopServiceTests(unittest.TestCase):
+    def test_login_unlock_waits_resumes_and_closes_prompt(self):
+        output = io.StringIO()
+        service = DesktopService(output)
+        service.ready = True
+        result = []
+        request = dict(type='ensure_unlocked', protocolVersion=1, rpId='example.test')
+        worker = threading.Thread(target=lambda: result.append(service.handle_request(request, timeout=2)))
+        worker.start()
+        deadline = time.monotonic() + 1
+        while not service.unlock_waiters and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(service.unlock_waiters)
+        self.assertEqual(result, [])
+        service.lock(preserve_unlock=True)  # Password retries must preserve the login.
+        self.assertFalse(next(iter(service.unlock_waiters.values())).is_set())
+        service.store.unlocked = True
+        worker.join(3)
+        self.assertNotIn('errorCode', result[0])
+        self.assertFalse(service.unlock_waiters)
+        self.assertEqual(json.loads(output.getvalue().splitlines()[-1])['type'], 'unlock_request_closed')
+
+    def test_login_unlock_cancellation_disconnect_timeout_and_lock(self):
+        for mode in ('cancel', 'disconnect', 'timeout', 'lock', 'close'):
+            service = DesktopService(io.StringIO())
+            service.ready = True
+            result = []
+            connected = threading.Event()
+            connected.set()
+            request = dict(type='ensure_unlocked', protocolVersion=1, rpId='example.test')
+            worker = threading.Thread(target=lambda: result.append(service.handle_request(request, connected.is_set, timeout=.3)))
+            worker.start()
+            deadline = time.monotonic() + 1
+            while not service.unlock_waiters and time.monotonic() < deadline:
+                time.sleep(.001)
+            if mode == 'cancel': service.command(dict(type='cancel_unlock_request', token=next(iter(service.unlock_waiters))))
+            if mode == 'disconnect': connected.clear()
+            if mode == 'lock': service.lock()
+            if mode == 'close': service.close()
+            worker.join(2)
+            self.assertFalse(worker.is_alive(), mode)
+            self.assertIn('errorCode', result[0], mode)
+            self.assertFalse(service.unlock_waiters)
+
+    def test_background_queries_do_not_prompt_unlock(self):
+        output = io.StringIO()
+        service = DesktopService(output)
+        for kind in ('ping', 'get_credentials', 'get_settings'):
+            service.handle_request(dict(type=kind))
+        self.assertEqual(output.getvalue(), '')
+
     def test_sync_feedback_reports_unavailable_and_completion(self):
         output = io.StringIO()
         service = DesktopService(output)

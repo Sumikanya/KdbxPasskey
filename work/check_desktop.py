@@ -13,7 +13,7 @@ for args in [[], ['0'], ['not-a-window']]:
 for scenario in ['unlocked-many-keys-dark', 'compact-unlocked-many-keys-light',
                  'unlocked-details-many-keys-dark', 'compact-unlocked-details-many-keys-light',
                  'unlocked-search-keys-dark', 'empty-keys-light', 'keys-dark',
-                 'session-dark', 'session-light', 'compact-settings-dark', 'about-light']:
+                 'login-unlock-dark', 'login-unlock-session-light', 'session-dark', 'session-light', 'compact-settings-dark', 'about-light']:
     output = root / ('work/027-' + scenario + '.png')
     result = subprocess.run([str(root / 'work/native-ui/KdbxPasskey.exe'), '--ui-check', str(output)], timeout=20)
     if result.returncode:

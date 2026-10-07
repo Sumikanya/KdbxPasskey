@@ -32,6 +32,15 @@ public sealed class PipeClient
 		_requestTimeoutMs = requestTimeoutMs;
 	}
 
+    public sealed class UnlockRequest : PipeRequestBase
+    {
+        public override string Type => "ensure_unlocked";
+        [JsonProperty("rpId")] public string RpId { get; set; }
+    }
+
+    public PipeResponseBase EnsureUnlocked(string rpId, CancellationToken token)
+        => Send<PipeResponseBase>(new UnlockRequest { RpId = rpId }, 130000, token);
+
 	public PingResponse Ping()
 		=> Send<PingResponse>(new PingRequest());
 
@@ -59,14 +68,15 @@ public sealed class PipeClient
 #if NET5_0_OR_GREATER
 	[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "TrimMode=partial keeps our types intact; IsTrimmable=false keeps Json.NET intact.")]
 #endif
-	private TResponse Send<TResponse>(PipeRequestBase request) where TResponse : PipeResponseBase, new()
+	private TResponse Send<TResponse>(PipeRequestBase request, int? timeoutMs = null, CancellationToken cancellation = default) where TResponse : PipeResponseBase, new()
 	{
 		request.ProtocolVersion = PipeConstants.ProtocolVersion;
 		try
 		{
-			using (var deadline = new CancellationTokenSource(_requestTimeoutMs))
+			using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation))
 			using (var pipe = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
 			{
+				deadline.CancelAfter(timeoutMs ?? _requestTimeoutMs);
 				pipe.ConnectAsync(ConnectTimeoutMs, deadline.Token).GetAwaiter().GetResult();
 
 				string requestJson = JsonConvert.SerializeObject(request);
